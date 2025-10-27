@@ -62,6 +62,10 @@ public class UserService {
         User alreadyExists = existingUser
                 .orElseThrow(() -> new InvalidUserException("User not exists"));
 
+        if (!alreadyExists.getPassword().equals(user.getPassword())){
+            throw new InvalidUserException("Invalid password");
+        }
+
         return UserDto.builder()
                 .id(alreadyExists.getId())
                 .name(alreadyExists.getName())

@@ -18,6 +18,8 @@ public class AuthConfig implements WebMvcConfigurer {
         this.adminInterceptor = adminInterceptor;
     }
 
+
+
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
@@ -30,7 +32,7 @@ public class AuthConfig implements WebMvcConfigurer {
 
         registry.addInterceptor(adminInterceptor)
                 .addPathPatterns(
-                        "/api/products/admin/**",
+                        "/api/product/admin/**",
                         "/api/order/admin/**"
                 );
     }
@@ -39,8 +41,10 @@ public class AuthConfig implements WebMvcConfigurer {
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")
                 .allowedOrigins("http://localhost:5173")
-                .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH")
+                .allowedMethods("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
                 .allowedHeaders("*")
-                .allowCredentials(true);
+                .allowCredentials(true)
+                .maxAge(3600);
     }
+
 }

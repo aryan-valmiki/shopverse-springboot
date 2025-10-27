@@ -13,6 +13,11 @@ public class AdminInterceptor implements HandlerInterceptor {
             HttpServletResponse response,
             Object handler) throws Exception {
 
+        if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            response.setStatus(HttpServletResponse.SC_OK);
+            return true;
+        }
+
         Boolean isAdmin = (Boolean) request.getAttribute("isAdmin");
 
         if (!Boolean.TRUE.equals(isAdmin)){

@@ -44,6 +44,7 @@ public class UserController {
         ResponseCookie cookie = ResponseCookie.from("jwtToken", token)
                 .httpOnly(true)
                 .path("/")
+                .maxAge(3600)
                 .build();
 
         ApiResponse<UserDto> response = new ApiResponse<>("Login successfully", true, existUser);

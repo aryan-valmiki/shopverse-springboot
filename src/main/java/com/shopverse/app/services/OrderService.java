@@ -111,6 +111,7 @@ public class OrderService {
                     return OrderDto.builder()
                             .id(item.getId())
                             .userId(item.getUser().getId())
+                            .userName(item.getUser().getName())
                             .totalAmount(item.getTotalAmount())
                             .totalQuantity(item.getTotalQuantity())
                             .status(item.getStatus().name())

@@ -19,6 +19,7 @@ import java.time.LocalDateTime;
 public class OrderDto {
     private Integer id;
     private Integer userId;
+    private String userName;
     private double totalAmount;
     private Integer totalQuantity;
     private String status;
