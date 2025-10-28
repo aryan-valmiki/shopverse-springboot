@@ -16,7 +16,7 @@ RUN chmod +x mvnw && ./mvnw dependency:go-offline -B
 # Copy project source
 COPY src src
 
-# Build application (skip tests for speed)
+# Build the application (skip tests for faster CI)
 RUN ./mvnw clean package -DskipTests
 
 # ========================
@@ -29,8 +29,9 @@ WORKDIR /app
 # Copy the jar built in the previous step
 COPY --from=builder /app/target/*.jar app.jar
 
-# Expose the port Spring Boot uses
+# Expose the port Spring Boot runs on
 EXPOSE 8080
 
-# Run the app
-ENTRYPOINT ["java", "-jar", "app.jar"]
+# ✅ Force Spring Boot to bind to all interfaces (important for Render)
+# ✅ Keeps container alive
+ENTRYPOINT ["java", "-Dserver.port=8080", "-Dserver.address=0.0.0.0", "-jar", "app.jar"]
