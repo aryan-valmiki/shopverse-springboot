@@ -9,20 +9,20 @@ COPY mvnw .
 COPY .mvn .mvn
 COPY pom.xml .
 
-# Give execution permission to mvnw
+# Give permission to mvnw
 RUN chmod +x mvnw
 
-# Download dependencies (improves caching)
+# Download dependencies for caching
 RUN ./mvnw dependency:go-offline -B
 
-# Copy project source code
+# Copy project source
 COPY src src
 
-# Build the application (skip tests to save time)
+# Build the application (skip tests)
 RUN ./mvnw clean package -DskipTests
 
-# Expose port 8080 (Spring Boot default)
+# Expose Spring Boot port
 EXPOSE 8080
 
-# Run the Spring Boot JAR file
-ENTRYPOINT ["java", "-jar", "target/*.jar"]
+# Find the built jar file dynamically and run it
+CMD ["sh", "-c", "java -jar $(find target -name '*.jar' | head -n 1)"]
