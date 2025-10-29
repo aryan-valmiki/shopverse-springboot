@@ -43,6 +43,8 @@ public class UserController {
 
         ResponseCookie cookie = ResponseCookie.from("jwtToken", token)
                 .httpOnly(true)
+                .secure(true)
+                .sameSite("None")
                 .path("/")
                 .maxAge(3600)
                 .build();
@@ -59,7 +61,10 @@ public class UserController {
     public ResponseEntity<ApiResponse<String>> logout(){
         ResponseCookie cookie = ResponseCookie.from("jwtToken", null)
                 .httpOnly(true)
+                .secure(true)           
                 .path("/")
+                .sameSite("None")       
+                .maxAge(0)              
                 .build();
 
         ApiResponse<String> response = new ApiResponse<>("logout successfully", true, "no data");
