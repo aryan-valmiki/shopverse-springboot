@@ -72,6 +72,7 @@ public class OrderService {
         return OrderDto.builder()
                 .id(createdOrder.getId())
                 .userId(createdOrder.getUser().getId())
+                .userName(createdOrder.getUser().getName())
                 .totalAmount(createdOrder.getTotalAmount())
                 .totalQuantity(createdOrder.getTotalQuantity())
                 .status(createdOrder.getStatus().name())
@@ -91,6 +92,7 @@ public class OrderService {
                 .map(item -> OrderDto.builder()
                         .id(item.getId())
                         .userId(item.getUser().getId())
+                        .userName(item.getUser().getName())
                         .totalAmount(item.getTotalAmount())
                         .totalQuantity(item.getTotalQuantity())
                         .status(item.getStatus().name())
@@ -119,5 +121,36 @@ public class OrderService {
                             .build();
                 })
                 .toList();
+    }
+
+    /**
+     * Admin method to update order status: PENDING -> CONFIRMED -> SHIPPED -> DELIVERED -> CANCELLED
+     */
+    public OrderDto updateOrderStatus(Integer orderId, String status) {
+        if (orderId == null) {
+            throw new InvalidOrderException("Order ID cannot be null");
+        }
+
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new InvalidOrderException("Order not found with ID: " + orderId));
+
+        try {
+            OrderStatus newStatus = OrderStatus.valueOf(status.trim().toUpperCase());
+            order.setStatus(newStatus);
+        } catch (IllegalArgumentException e) {
+            throw new InvalidOrderException("Invalid order status: " + status + ". Allowed: PENDING, CONFIRMED, SHIPPED, DELIVERED, CANCELLED");
+        }
+
+        Order updatedOrder = orderRepository.save(order);
+
+        return OrderDto.builder()
+                .id(updatedOrder.getId())
+                .userId(updatedOrder.getUser().getId())
+                .userName(updatedOrder.getUser().getName())
+                .totalAmount(updatedOrder.getTotalAmount())
+                .totalQuantity(updatedOrder.getTotalQuantity())
+                .status(updatedOrder.getStatus().name())
+                .createdAt(updatedOrder.getCreatedAt())
+                .build();
     }
 }

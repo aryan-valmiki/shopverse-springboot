@@ -10,7 +10,6 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
-
 @RestController
 @RequestMapping("/api/product")
 public class ProductController {
@@ -20,17 +19,23 @@ public class ProductController {
         this.productService = productService;
     }
 
-
-    // admin protected route
+    // admin protected route - Add Product
     @PostMapping("/admin/add")
     public ResponseEntity<ApiResponse<Product>> addProduct(
             @RequestParam("name") String name,
             @RequestParam("description") String description,
             @RequestParam("price") Double price,
             @RequestParam("stock") Integer stock,
-            @RequestParam("image")MultipartFile image
-            ){
-        Product createdProduct = productService.addProduct(name, description, price, stock, image);
+            @RequestParam("image") MultipartFile image,
+            @RequestParam(value = "category", required = false) String category,
+            @RequestParam(value = "brand", required = false) String brand,
+            @RequestParam(value = "ram", required = false) String ram,
+            @RequestParam(value = "processor", required = false) String processor,
+            @RequestParam(value = "storage", required = false) String storage
+    ){
+        Product createdProduct = productService.addProduct(
+                name, description, price, stock, image, category, brand, ram, processor, storage
+        );
 
         ApiResponse<Product> response = new ApiResponse<>("product created", true, createdProduct);
 
@@ -39,6 +44,22 @@ public class ProductController {
                 .body(response);
     }
 
+    // admin protected route - Update Product Status (ACTIVE, INACTIVE, OUT_OF_STOCK)
+    @PatchMapping("/admin/{id}/status")
+    public ResponseEntity<ApiResponse<Product>> updateProductStatus(
+            @PathVariable Integer id,
+            @RequestParam("status") String status
+    ){
+        Product updatedProduct = productService.updateProductStatus(id, status);
+
+        ApiResponse<Product> response = new ApiResponse<>("Product status updated to " + updatedProduct.getStatus(), true, updatedProduct);
+
+        return ResponseEntity
+                .status(HttpStatus.OK)
+                .body(response);
+    }
+
+    // admin protected route - Delete Product
     @DeleteMapping("/admin/delete/{id}")
     public ResponseEntity<ApiResponse<String>> deleteProduct(@PathVariable Integer id){
         Boolean isDeleted = productService.deleteProduct(id);
@@ -50,11 +71,13 @@ public class ProductController {
                 .body(response);
     }
 
-
-    //public routes
+    // public route - Get All Products (with optional sorting)
     @GetMapping("/")
-    public ResponseEntity<ApiResponse<List<Product>>> getAllProducts(){
-        List<Product> products = productService.getAllProducts();
+    public ResponseEntity<ApiResponse<List<Product>>> getAllProducts(
+            @RequestParam(value = "sortBy", required = false) String sortBy,
+            @RequestParam(value = "sortDir", required = false, defaultValue = "asc") String sortDir
+    ){
+        List<Product> products = productService.getAllProducts(sortBy, sortDir);
 
         ApiResponse<List<Product>> response = new ApiResponse<>("All products", true, products);
 
@@ -63,9 +86,9 @@ public class ProductController {
                 .body(response);
     }
 
+    // public route - Get Product by ID
     @GetMapping("/{id}")
     public ResponseEntity<ApiResponse<Product>> getProductById(@PathVariable Integer id){
-        System.out.println(id);
         Product product = productService.getProductById(id);
 
         ApiResponse<Product> response = new ApiResponse<>("product", true, product);

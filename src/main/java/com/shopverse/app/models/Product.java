@@ -6,8 +6,6 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.util.List;
-
 @Entity
 @Data
 @NoArgsConstructor
@@ -19,10 +17,33 @@ public class Product {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     @Column(nullable = false, updatable = false)
     private Integer id;
+
     private String name;
+
+    @Column(columnDefinition = "TEXT")
     private String description;
+
     private Double price;
     private Integer stock;
+
+    @Column(columnDefinition = "TEXT")
     private String imageUrl;
+
     private String imagePublicId;
+
+    // Specifications for AI recommendation (simple & clean for college project)
+    private String category;
+    private String brand;
+    private String ram;
+    private String processor;
+    private String storage;
+
+    // Product status: ACTIVE, INACTIVE, OUT_OF_STOCK
+    @Builder.Default
+    @Column(length = 50)
+    private String status = "ACTIVE";
+
+    public String getStatus() {
+        return status != null ? status : "ACTIVE";
+    }
 }

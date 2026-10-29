@@ -4,6 +4,7 @@ import com.shopverse.app.exceptions.InvalidIoException;
 import com.shopverse.app.exceptions.InvalidProductException;
 import com.shopverse.app.models.Product;
 import com.shopverse.app.repositories.ProductRepository;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -23,19 +24,24 @@ public class ProductService {
     }
 
     public Product addProduct(String name, String description, Double price, Integer stock, MultipartFile image){
-        if (name.trim().isEmpty()){
+        return addProduct(name, description, price, stock, image, null, null, null, null, null);
+    }
+
+    public Product addProduct(String name, String description, Double price, Integer stock, MultipartFile image,
+                              String category, String brand, String ram, String processor, String storage){
+        if (name == null || name.trim().isEmpty()){
             throw new InvalidProductException("name is required");
         }
-        if (description.trim().isEmpty()){
+        if (description == null || description.trim().isEmpty()){
             throw new InvalidProductException("description is required");
         }
-        if (price == 0){
+        if (price == null || price == 0){
             throw new InvalidProductException("price is required");
         }
-        if (stock == 0){
+        if (stock == null || stock == 0){
             throw new InvalidProductException("stock is required");
         }
-        if (image.isEmpty()){
+        if (image == null || image.isEmpty()){
             throw new InvalidProductException("image is required");
         }
 
@@ -44,14 +50,19 @@ public class ProductService {
         String publicId = uploadResponse.get("public_id").toString();
 
         Product product = Product.builder()
-                        .name(name.trim())
-                                .description(description.trim())
-                                        .price(price)
-                                                .stock(stock)
-                                                        .imageUrl(imageUrlFromCloudinary)
-                                                                .imagePublicId(publicId)
-                                                                .build();
-
+                .name(name.trim())
+                .description(description.trim())
+                .price(price)
+                .stock(stock)
+                .imageUrl(imageUrlFromCloudinary)
+                .imagePublicId(publicId)
+                .category(category != null ? category.trim() : null)
+                .brand(brand != null ? brand.trim() : null)
+                .ram(ram != null ? ram.trim() : null)
+                .processor(processor != null ? processor.trim() : null)
+                .storage(storage != null ? storage.trim() : null)
+                .status("ACTIVE")
+                .build();
 
         return productRepository.save(product);
     }
@@ -74,6 +85,14 @@ public class ProductService {
         return productRepository.findAll();
     }
 
+    public List<Product> getAllProducts(String sortBy, String sortDir){
+        if (sortBy == null || sortBy.trim().isEmpty()) {
+            return productRepository.findAll();
+        }
+        Sort.Direction direction = "desc".equalsIgnoreCase(sortDir) ? Sort.Direction.DESC : Sort.Direction.ASC;
+        return productRepository.findAll(Sort.by(direction, sortBy));
+    }
+
     public Product getProductById(Integer id){
         if (id == null){
             throw new InvalidProductException("Id not found");
@@ -83,8 +102,23 @@ public class ProductService {
 
         return product
                 .orElseThrow(() -> new InvalidProductException("Product not exists"));
-
     }
 
+    /**
+     * Admin method to update product status (ACTIVE, INACTIVE, OUT_OF_STOCK)
+     */
+    public Product updateProductStatus(Integer id, String status) {
+        if (id == null) {
+            throw new InvalidProductException("Product ID cannot be null");
+        }
+        Product product = productRepository.findById(id)
+                .orElseThrow(() -> new InvalidProductException("Product not found with ID: " + id));
 
+        String normalizedStatus = (status != null && !status.trim().isEmpty())
+                ? status.trim().toUpperCase()
+                : "ACTIVE";
+
+        product.setStatus(normalizedStatus);
+        return productRepository.save(product);
+    }
 }

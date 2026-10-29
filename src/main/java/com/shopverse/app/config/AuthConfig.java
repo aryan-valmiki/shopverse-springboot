@@ -18,8 +18,6 @@ public class AuthConfig implements WebMvcConfigurer {
         this.adminInterceptor = adminInterceptor;
     }
 
-
-
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
@@ -27,13 +25,15 @@ public class AuthConfig implements WebMvcConfigurer {
                 .excludePathPatterns(
                         "/api/auth/**",
                         "/api/product/",
-                        "/api/product/{id}"
-                        );
+                        "/api/product/{id}",
+                        "/api/ai/**" // Public AI recommendation endpoint
+                );
 
         registry.addInterceptor(adminInterceptor)
                 .addPathPatterns(
                         "/api/product/admin/**",
-                        "/api/order/admin/**"
+                        "/api/order/admin/**",
+                        "/api/chat/admin/**"
                 );
     }
 
@@ -46,5 +46,4 @@ public class AuthConfig implements WebMvcConfigurer {
                 .allowCredentials(true)
                 .maxAge(3600);
     }
-
 }
