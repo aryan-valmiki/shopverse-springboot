@@ -31,14 +31,20 @@ public class AiService {
 
     private final ProductRepository productRepository;
     private final ObjectMapper objectMapper;
-    private final HttpClient httpClient;
+    private HttpClient httpClient;
 
     public AiService(ProductRepository productRepository, ObjectMapper objectMapper) {
         this.productRepository = productRepository;
         this.objectMapper = objectMapper;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+    }
+
+    private synchronized HttpClient getHttpClient() {
+        if (this.httpClient == null) {
+            this.httpClient = HttpClient.newBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
+                    .build();
+        }
+        return this.httpClient;
     }
 
     public AiRecommendResponse getRecommendations(AiRecommendRequest request) {
@@ -51,13 +57,15 @@ public class AiService {
                     .build();
         }
 
-        // Try getting intelligent recommendations from Groq AI
-        try {
-            return callGroqForRecommendations(request, allProducts);
-        } catch (Exception ex) {
-            System.err.println("Groq AI Call failed, using smart fallback: " + ex.getMessage());
-            return fallbackRuleBasedRecommendation(request, allProducts);
+        // Try getting intelligent recommendations from Groq AI if configured
+        if (isGroqConfigured()) {
+            try {
+                return callGroqForRecommendations(request, allProducts);
+            } catch (Exception ex) {
+                System.err.println("Groq AI Call failed, using smart fallback: " + ex.getMessage());
+            }
         }
+        return fallbackRuleBasedRecommendation(request, allProducts);
     }
 
     private AiRecommendResponse callGroqForRecommendations(AiRecommendRequest request, List<Product> products) throws Exception {
@@ -79,24 +87,29 @@ public class AiService {
         }
 
         String systemPrompt = "You are an AI Product Advisor for ShopVerse, an e-commerce platform. " +
-                "You must recommend products to the user based SOLELY on the products available in the store inventory provided below. " +
-                "NEVER invent or recommend products that are not present in the inventory list. " +
-                "Return your response strictly as a JSON object with this exact structure: " +
-                "{\"summary\": \"A helpful 1-2 sentence overall summary of your recommendation\", " +
-                "\"recommendations\": [{\"productId\": 1, \"matchScore\": 95, \"matchReason\": \"Detailed explanation why this matches their requested specs like RAM and processor\", \"highlight\": \"Key highlight badge like 16GB RAM + Core i7\"}]}";
+                "You must recommend products based SOLELY on the products available in the store inventory provided below. " +
+                "CRITICAL FILTERING CONSTRAINTS: " +
+                "1. STRICT CATEGORY: If the user specified a Category (e.g. 'Smartphones'), ONLY recommend that category. NEVER recommend Laptops or Audio for Smartphones. " +
+                "2. STRICT BUDGET: If user specified Maximum Budget, ONLY recommend products where Price <= Maximum Budget. NEVER recommend products exceeding budget. " +
+                "3. STRICT HARDWARE: Match requested RAM and Processor. " +
+                "4. ZERO MATCHES: If NO product in the inventory strictly satisfies ALL constraints, return an empty array: {\"summary\": \"No matching products in store inventory for these specifications.\", \"recommendations\": []}. " +
+                "5. NEVER invent products or IDs not in the inventory. " +
+                "Return strictly valid JSON matching this schema: " +
+                "{\"summary\": \"1-2 sentence overall summary of your recommendation\", " +
+                "\"recommendations\": [{\"productId\": 1, \"matchScore\": 95, \"matchReason\": \"Detailed explanation\", \"highlight\": \"Key highlight badge\"}]}";
 
         StringBuilder userPrompt = new StringBuilder();
         userPrompt.append("User's Desired Specifications:\n");
-        if (request.getCategory() != null && !request.getCategory().isBlank()) {
+        if (request.getCategory() != null && !request.getCategory().isBlank() && !request.getCategory().equalsIgnoreCase("All")) {
             userPrompt.append("- Category: ").append(request.getCategory()).append("\n");
         }
-        if (request.getRam() != null && !request.getRam().isBlank()) {
+        if (request.getRam() != null && !request.getRam().isBlank() && !request.getRam().equalsIgnoreCase("Any")) {
             userPrompt.append("- Required RAM: ").append(request.getRam()).append("\n");
         }
-        if (request.getProcessor() != null && !request.getProcessor().isBlank()) {
+        if (request.getProcessor() != null && !request.getProcessor().isBlank() && !request.getProcessor().equalsIgnoreCase("Any")) {
             userPrompt.append("- Required Processor: ").append(request.getProcessor()).append("\n");
         }
-        if (request.getStorage() != null && !request.getStorage().isBlank()) {
+        if (request.getStorage() != null && !request.getStorage().isBlank() && !request.getStorage().equalsIgnoreCase("Any")) {
             userPrompt.append("- Required Storage: ").append(request.getStorage()).append("\n");
         }
         if (request.getMaxBudget() != null && request.getMaxBudget() > 0) {
@@ -111,7 +124,7 @@ public class AiService {
 
         userPrompt.append("\nAVAILABLE PRODUCTS IN SHOPVERSE INVENTORY:\n");
         userPrompt.append(catalogBuilder);
-        userPrompt.append("\nPlease select up to 4 best matching products from the inventory. Prioritize products matching the requested RAM and Processor. Return strictly valid JSON.");
+        userPrompt.append("\nPlease select up to 4 strictly matching products from the inventory. If none strictly match, return empty recommendations array. Return strictly valid JSON.");
 
         // Construct request body for Groq (OpenAI-compatible format)
         Map<String, Object> messageSystem = Map.of("role", "system", "content", systemPrompt);
@@ -120,7 +133,7 @@ public class AiService {
         Map<String, Object> requestBodyMap = new HashMap<>();
         requestBodyMap.put("model", groqModel);
         requestBodyMap.put("messages", List.of(messageSystem, messageUser));
-        requestBodyMap.put("temperature", 0.3);
+        requestBodyMap.put("temperature", 0.1);
         requestBodyMap.put("response_format", Map.of("type", "json_object"));
 
         String requestJson = objectMapper.writeValueAsString(requestBodyMap);
@@ -129,25 +142,25 @@ public class AiService {
                 .uri(URI.create(groqApiUrl))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + groqApiKey.trim())
-                .timeout(Duration.ofSeconds(20))
+                .timeout(Duration.ofSeconds(15))
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
-        HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> httpResponse = getHttpClient().send(httpRequest, HttpResponse.BodyHandlers.ofString());
 
         if (httpResponse.statusCode() >= 200 && httpResponse.statusCode() < 300) {
             JsonNode rootNode = objectMapper.readTree(httpResponse.body());
             JsonNode choices = rootNode.path("choices");
             if (choices.isArray() && choices.size() > 0) {
                 String aiContent = choices.get(0).path("message").path("content").asText();
-                return parseAiJsonResponse(aiContent, products);
+                return parseAiJsonResponse(aiContent, products, request);
             }
         }
 
         throw new RuntimeException("Groq API returned status: " + httpResponse.statusCode() + " body: " + httpResponse.body());
     }
 
-    private AiRecommendResponse parseAiJsonResponse(String aiContent, List<Product> allProducts) {
+    private AiRecommendResponse parseAiJsonResponse(String aiContent, List<Product> allProducts, AiRecommendRequest request) {
         try {
             JsonNode jsonNode = objectMapper.readTree(aiContent);
             String summary = jsonNode.path("summary").asText("Here are the best matching products from our catalog based on your specifications.");
@@ -164,6 +177,10 @@ public class AiService {
                     Product p = productMap.get(productId);
 
                     if (p != null) {
+                        // Enforce strict constraints on LLM output
+                        if (!productMatchesHardwareCriteria(p, request)) {
+                            continue;
+                        }
                         recommendations.add(AiRecommendationItem.builder()
                                 .productId(productId)
                                 .product(p)
@@ -175,86 +192,151 @@ public class AiService {
                 }
             }
 
-            if (!recommendations.isEmpty()) {
-                return AiRecommendResponse.builder()
-                        .summary(summary)
-                        .recommendations(recommendations)
-                        .build();
+            if (recommendations.isEmpty()) {
+                summary = "No products in our current store inventory strictly match these specifications.";
             }
+
+            return AiRecommendResponse.builder()
+                    .summary(summary)
+                    .recommendations(recommendations)
+                    .build();
         } catch (Exception e) {
             System.err.println("Error parsing AI JSON response: " + e.getMessage());
         }
 
-        return fallbackRuleBasedRecommendation(new AiRecommendRequest(), allProducts);
+        return fallbackRuleBasedRecommendation(request, allProducts);
     }
 
     private AiRecommendResponse fallbackRuleBasedRecommendation(AiRecommendRequest req, List<Product> products) {
-        String reqRam = req.getRam() != null ? req.getRam().toLowerCase() : "";
-        String reqProc = req.getProcessor() != null ? req.getProcessor().toLowerCase() : "";
-        String reqCat = req.getCategory() != null ? req.getCategory().toLowerCase() : "";
-        Double maxBudget = req.getMaxBudget();
-
         List<AiRecommendationItem> items = new ArrayList<>();
 
         for (Product p : products) {
-            int score = 60;
+            // STRICT FILTERING: Product MUST meet hard criteria (Category & Budget)
+            if (!productMatchesHardwareCriteria(p, req)) {
+                continue;
+            }
+
+            int score = 75;
             List<String> highlights = new ArrayList<>();
+            List<String> reasons = new ArrayList<>();
 
-            if (!reqCat.isBlank() && p.getCategory() != null && p.getCategory().toLowerCase().contains(reqCat)) {
-                score += 15;
-                highlights.add(p.getCategory());
+            if (req.getCategory() != null && !req.getCategory().isBlank() && !req.getCategory().equalsIgnoreCase("All")) {
+                score += 5;
+                highlights.add(p.getCategory() != null ? p.getCategory() : req.getCategory());
+                reasons.add("Matches " + req.getCategory() + " category");
             }
 
-            if (!reqRam.isBlank()) {
-                String pRam = p.getRam() != null ? p.getRam().toLowerCase() : "";
-                String pDesc = p.getDescription() != null ? p.getDescription().toLowerCase() : "";
-                if (pRam.contains(reqRam) || pDesc.contains(reqRam)) {
-                    score += 20;
-                    highlights.add("RAM Match: " + (p.getRam() != null ? p.getRam() : req.getRam()));
-                }
+            if (req.getRam() != null && !req.getRam().isBlank() && !req.getRam().equalsIgnoreCase("Any")) {
+                score += 10;
+                highlights.add("RAM: " + (p.getRam() != null ? p.getRam() : req.getRam()));
+                reasons.add("Equipped with " + (p.getRam() != null ? p.getRam() : req.getRam()));
             }
 
-            if (!reqProc.isBlank()) {
-                String pProc = p.getProcessor() != null ? p.getProcessor().toLowerCase() : "";
-                String pDesc = p.getDescription() != null ? p.getDescription().toLowerCase() : "";
-                if (pProc.contains(reqProc) || pDesc.contains(reqProc)) {
-                    score += 20;
-                    highlights.add("Processor Match: " + (p.getProcessor() != null ? p.getProcessor() : req.getProcessor()));
-                }
+            if (req.getProcessor() != null && !req.getProcessor().isBlank() && !req.getProcessor().equalsIgnoreCase("Any")) {
+                score += 10;
+                highlights.add("CPU: " + (p.getProcessor() != null ? p.getProcessor() : req.getProcessor()));
+                reasons.add("Powered by " + (p.getProcessor() != null ? p.getProcessor() : req.getProcessor()));
             }
 
-            if (maxBudget != null && maxBudget > 0 && p.getPrice() != null) {
-                if (p.getPrice() <= maxBudget) {
-                    score += 10;
-                    highlights.add("Within Budget");
-                }
+            if (req.getMaxBudget() != null && req.getMaxBudget() > 0 && p.getPrice() != null) {
+                highlights.add("Within Budget (₹" + String.format("%,.0f", p.getPrice()) + ")");
+                reasons.add("Fits within your ₹" + String.format("%,.0f", req.getMaxBudget()) + " budget");
             }
 
-            score = Math.min(score, 99);
-
-            String reason = "Recommended based on your hardware preferences: ";
-            if (!highlights.isEmpty()) {
-                reason += String.join(", ", highlights) + ".";
-            } else {
-                reason += "Popular choice in our inventory matching your category.";
-            }
+            String reason = reasons.isEmpty()
+                    ? "Matches your selected hardware criteria."
+                    : String.join(". ", reasons) + ".";
 
             items.add(AiRecommendationItem.builder()
                     .productId(p.getId())
                     .product(p)
-                    .matchScore(score)
+                    .matchScore(Math.min(score, 98))
                     .matchReason(reason)
-                    .highlight(!highlights.isEmpty() ? highlights.get(0) : "Recommended Pick")
+                    .highlight(!highlights.isEmpty() ? highlights.get(0) : "Recommended Spec")
                     .build());
         }
 
         items.sort((a, b) -> Integer.compare(b.getMatchScore(), a.getMatchScore()));
         List<AiRecommendationItem> topItems = items.stream().limit(4).collect(Collectors.toList());
 
+        String summary;
+        if (topItems.isEmpty()) {
+            summary = "No products currently available in our store inventory strictly match your selected specifications.";
+        } else {
+            summary = "Found " + topItems.size() + " genuine in-store product" + (topItems.size() > 1 ? "s" : "") + " matching your exact hardware and budget criteria.";
+        }
+
         return AiRecommendResponse.builder()
-                .summary("Based on your desired specifications, here are the top matching products available in ShopVerse.")
+                .summary(summary)
                 .recommendations(topItems)
                 .build();
+    }
+
+    private boolean productMatchesHardwareCriteria(Product p, AiRecommendRequest req) {
+        if (p == null) return false;
+
+        // 1. Strict Category
+        if (req.getCategory() != null && !req.getCategory().isBlank() && !req.getCategory().equalsIgnoreCase("All")) {
+            String cat = req.getCategory().toLowerCase();
+            String pCat = p.getCategory() != null ? p.getCategory().toLowerCase() : "";
+            String pName = p.getName() != null ? p.getName().toLowerCase() : "";
+
+            if (cat.contains("laptop") && !pCat.contains("laptop") && !pName.contains("laptop") && !pName.contains("macbook")) {
+                return false;
+            }
+            if ((cat.contains("phone") || cat.contains("mobile") || cat.contains("smartphone")) &&
+                    !pCat.contains("phone") && !pCat.contains("mobile") && !pCat.contains("smartphone") && !pName.contains("phone") && !pName.contains("iphone")) {
+                return false;
+            }
+            if (cat.contains("audio") && !pCat.contains("audio") && !pCat.contains("headphone") && !pName.contains("headphone") && !pName.contains("earbud")) {
+                return false;
+            }
+            if (cat.contains("tablet") && !pCat.contains("tablet") && !pName.contains("tablet") && !pName.contains("ipad")) {
+                return false;
+            }
+            if (cat.contains("gaming") && !pCat.contains("gaming") && !pName.contains("gaming")) {
+                return false;
+            }
+        }
+
+        // 2. Strict Budget Cap
+        if (req.getMaxBudget() != null && req.getMaxBudget() > 0) {
+            if (p.getPrice() == null || p.getPrice() > req.getMaxBudget()) {
+                return false;
+            }
+        }
+
+        // 3. Strict RAM (if specified and not "Any")
+        if (req.getRam() != null && !req.getRam().isBlank() && !req.getRam().equalsIgnoreCase("Any")) {
+            Integer ramNum = extractRam(req.getRam());
+            if (ramNum != null) {
+                String pRam = p.getRam() != null ? p.getRam().toLowerCase() : "";
+                String pDesc = p.getDescription() != null ? p.getDescription().toLowerCase() : "";
+                String pName = p.getName() != null ? p.getName().toLowerCase() : "";
+                boolean hasRam = pRam.contains(String.valueOf(ramNum)) || pDesc.contains(ramNum + "gb") || pDesc.contains(ramNum + " gb") || pName.contains(ramNum + "gb");
+                if (!hasRam) {
+                    return false;
+                }
+            }
+        }
+
+        // 4. Strict Processor (if specified and not "Any")
+        if (req.getProcessor() != null && !req.getProcessor().isBlank() && !req.getProcessor().equalsIgnoreCase("Any")) {
+            String proc = req.getProcessor().toLowerCase();
+            String pProc = p.getProcessor() != null ? p.getProcessor().toLowerCase() : "";
+            String pDesc = p.getDescription() != null ? p.getDescription().toLowerCase() : "";
+            String pName = p.getName() != null ? p.getName().toLowerCase() : "";
+
+            String targetCpu = extractProcessor(proc);
+            if (targetCpu != null) {
+                boolean hasCpu = pProc.contains(targetCpu) || pDesc.contains(targetCpu) || pName.contains(targetCpu);
+                if (!hasCpu) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     // =========================================================================
@@ -275,22 +357,24 @@ public class AiService {
                 ? request.getPreference()
                 : "Overall Performance & Value for Money";
 
-        try {
-            AiVerdictDto verdict = callGroqForComparison(p1, p2, preference);
-            return AiCompareResponse.builder()
-                    .product1(p1)
-                    .product2(p2)
-                    .verdict(verdict)
-                    .build();
-        } catch (Exception e) {
-            System.err.println("Groq AI Compare call failed, using smart fallback: " + e.getMessage());
-            AiVerdictDto fallbackVerdict = fallbackRuleBasedComparison(p1, p2, preference);
-            return AiCompareResponse.builder()
-                    .product1(p1)
-                    .product2(p2)
-                    .verdict(fallbackVerdict)
-                    .build();
+        if (isGroqConfigured()) {
+            try {
+                AiVerdictDto verdict = callGroqForComparison(p1, p2, preference);
+                return AiCompareResponse.builder()
+                        .product1(p1)
+                        .product2(p2)
+                        .verdict(verdict)
+                        .build();
+            } catch (Exception e) {
+                System.err.println("Groq AI Compare call failed, using smart fallback: " + e.getMessage());
+            }
         }
+        AiVerdictDto fallbackVerdict = fallbackRuleBasedComparison(p1, p2, preference);
+        return AiCompareResponse.builder()
+                .product1(p1)
+                .product2(p2)
+                .verdict(fallbackVerdict)
+                .build();
     }
 
     private AiVerdictDto callGroqForComparison(Product p1, Product p2, String preference) throws Exception {
@@ -338,7 +422,7 @@ public class AiService {
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
-        HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> httpResponse = getHttpClient().send(httpRequest, HttpResponse.BodyHandlers.ofString());
 
         if (httpResponse.statusCode() >= 200 && httpResponse.statusCode() < 300) {
             JsonNode rootNode = objectMapper.readTree(httpResponse.body());
@@ -409,7 +493,7 @@ public class AiService {
     public AiPromptSearchResponse promptSearch(AiPromptSearchRequest request) {
         if (request.getPrompt() == null || request.getPrompt().trim().isEmpty()) {
             return AiPromptSearchResponse.builder()
-                    .detectedIntent("Please speak or enter what you are looking for.")
+                    .detectedIntent("Please enter or speak what you are looking for.")
                     .matches(Collections.emptyList())
                     .build();
         }
@@ -422,15 +506,23 @@ public class AiService {
                     .build();
         }
 
-        try {
-            return callGroqForPromptSearch(request.getPrompt().trim(), allProducts);
-        } catch (Exception ex) {
-            System.err.println("Groq Prompt Search failed, using smart fallback: " + ex.getMessage());
-            return fallbackPromptSearch(request.getPrompt().trim(), allProducts);
+        if (isGroqConfigured()) {
+            try {
+                return callGroqForPromptSearch(request.getPrompt().trim(), allProducts);
+            } catch (Exception ex) {
+                System.err.println("Groq Prompt Search failed, using smart fallback: " + ex.getMessage());
+            }
         }
+        return fallbackPromptSearch(request.getPrompt().trim(), allProducts);
     }
 
     private AiPromptSearchResponse callGroqForPromptSearch(String userPromptText, List<Product> products) throws Exception {
+        String query = userPromptText.toLowerCase().trim();
+        Double extractedBudget = extractBudget(query);
+        Integer extractedRam = extractRam(query);
+        String extractedCategory = extractCategory(query);
+        String extractedBrand = extractBrand(query);
+
         StringBuilder catalogBuilder = new StringBuilder();
         for (Product p : products) {
             catalogBuilder.append(String.format(
@@ -446,16 +538,20 @@ public class AiService {
         }
 
         String systemPrompt = "You are ShopVerse's AI Prompt-to-Cart Engine. " +
-                "The shopper spoke or typed a natural language sentence describing what tech they want. " +
-                "1. Understand their intent (Category, RAM, Processor, Budget, Usage). " +
-                "2. Pick 1 to 4 matching products strictly from the store catalog provided. " +
+                "The shopper typed a natural language query describing what tech they want. " +
+                "CRITICAL FILTERING CONSTRAINTS: " +
+                "1. STRICT CATEGORY: If the user asks for 'phones', ONLY select phones/smartphones. NEVER select laptops, audio, or other categories. " +
+                "2. STRICT BUDGET: If user specifies a budget (e.g. 'under 20k' or 'under 20000'), ONLY select products where Price <= budget. NEVER return products that exceed the budget. " +
+                "3. STRICT SPECS: If user asks for specific RAM, brand, or processor, only select matching items. " +
+                "4. ZERO MATCHES: If NO product in the inventory strictly satisfies ALL constraints, return an empty matches list: {\"detectedIntent\": \"...\", \"matches\": []}. " +
+                "5. NEVER invent or recommend substitute products that violate budget or category. " +
                 "Return strictly valid JSON matching this schema: " +
-                "{\"detectedIntent\": \"Concise 1-sentence breakdown of what user wants (e.g. 16GB RAM laptop for programming under ₹1,00,000)\", " +
-                "\"matches\": [{\"productId\": 1, \"matchScore\": 96, \"matchReason\": \"Directly fits your 16GB RAM requirement and coding needs\", \"highlight\": \"16GB RAM • Core i7\"}]}";
+                "{\"detectedIntent\": \"Concise breakdown of user request\", " +
+                "\"matches\": [{\"productId\": 1, \"matchScore\": 96, \"matchReason\": \"Fits budget and specifications\", \"highlight\": \"Under ₹20k\"}]}";
 
-        String userPrompt = "USER SPOKE/TYPED:\n\"" + userPromptText + "\"\n\n" +
-                "AVAILABLE STORE INVENTORY:\n" + catalogBuilder + "\n" +
-                "Return valid JSON only.";
+        String userPrompt = "USER QUERY:\n\"" + userPromptText + "\"\n\n" +
+                "STORE INVENTORY:\n" + catalogBuilder + "\n" +
+                "Return strictly valid JSON matching the schema.";
 
         Map<String, Object> messageSystem = Map.of("role", "system", "content", systemPrompt);
         Map<String, Object> messageUser = Map.of("role", "user", "content", userPrompt);
@@ -463,7 +559,7 @@ public class AiService {
         Map<String, Object> requestBodyMap = new HashMap<>();
         requestBodyMap.put("model", groqModel);
         requestBodyMap.put("messages", List.of(messageSystem, messageUser));
-        requestBodyMap.put("temperature", 0.2);
+        requestBodyMap.put("temperature", 0.1);
         requestBodyMap.put("response_format", Map.of("type", "json_object"));
 
         String requestJson = objectMapper.writeValueAsString(requestBodyMap);
@@ -472,11 +568,11 @@ public class AiService {
                 .uri(URI.create(groqApiUrl))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + groqApiKey.trim())
-                .timeout(Duration.ofSeconds(20))
+                .timeout(Duration.ofSeconds(15))
                 .POST(HttpRequest.BodyPublishers.ofString(requestJson))
                 .build();
 
-        HttpResponse<String> httpResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
+        HttpResponse<String> httpResponse = getHttpClient().send(httpRequest, HttpResponse.BodyHandlers.ofString());
 
         if (httpResponse.statusCode() >= 200 && httpResponse.statusCode() < 300) {
             JsonNode rootNode = objectMapper.readTree(httpResponse.body());
@@ -485,7 +581,7 @@ public class AiService {
                 String aiContent = choices.get(0).path("message").path("content").asText();
                 JsonNode json = objectMapper.readTree(aiContent);
 
-                String detectedIntent = json.path("detectedIntent").asText("Matched against your query: " + userPromptText);
+                String detectedIntent = json.path("detectedIntent").asText("Query: " + userPromptText);
 
                 Map<Integer, Product> productMap = products.stream()
                         .collect(Collectors.toMap(Product::getId, p -> p));
@@ -498,23 +594,26 @@ public class AiService {
                         int productId = item.path("productId").asInt();
                         Product p = productMap.get(productId);
                         if (p != null) {
+                            // Enforce strict constraints on LLM output to guarantee correctness
+                            if (!productMatchesStrictConstraints(p, extractedCategory, extractedBudget, extractedRam, extractedBrand)) {
+                                continue;
+                            }
                             matches.add(AiRecommendationItem.builder()
                                     .productId(productId)
                                     .product(p)
                                     .matchScore(item.path("matchScore").asInt(92))
-                                    .matchReason(item.path("matchReason").asText("Matches your voice/text criteria."))
+                                    .matchReason(item.path("matchReason").asText("Matches your criteria."))
                                     .highlight(item.path("highlight").asText("Direct Match"))
                                     .build());
                         }
                     }
                 }
 
-                if (!matches.isEmpty()) {
-                    return AiPromptSearchResponse.builder()
-                            .detectedIntent(detectedIntent)
-                            .matches(matches)
-                            .build();
-                }
+                // If no items passed strict constraints, return zero matches (do not fallback to dummy products)
+                return AiPromptSearchResponse.builder()
+                        .detectedIntent(detectedIntent)
+                        .matches(matches)
+                        .build();
             }
         }
 
@@ -522,57 +621,305 @@ public class AiService {
     }
 
     private AiPromptSearchResponse fallbackPromptSearch(String userPromptText, List<Product> products) {
-        String query = userPromptText.toLowerCase();
+        String query = userPromptText.toLowerCase().trim();
+
+        // 1. Extract Budget
+        Double extractedBudget = extractBudget(query);
+
+        // 2. Extract RAM requirement (e.g. 8, 16, 32, 64)
+        Integer extractedRam = extractRam(query);
+
+        // 3. Extract Category
+        String extractedCategory = extractCategory(query);
+
+        // 4. Extract Brand
+        String extractedBrand = extractBrand(query);
+
+        // 5. Extract Processor keyword
+        String extractedProcessor = extractProcessor(query);
+
+        // Build human-friendly detected intent
+        List<String> intentParts = new ArrayList<>();
+        if (extractedBrand != null) intentParts.add(capitalize(extractedBrand));
+        if (extractedCategory != null) intentParts.add(capitalize(extractedCategory) + "s");
+        if (extractedRam != null) intentParts.add(extractedRam + "GB RAM");
+        if (extractedProcessor != null) intentParts.add(extractedProcessor.toUpperCase());
+        if (extractedBudget != null) intentParts.add("under ₹" + String.format("%,.0f", extractedBudget));
+
+        String detectedIntent;
+        if (!intentParts.isEmpty()) {
+            detectedIntent = "Looking for " + String.join(", ", intentParts);
+        } else {
+            detectedIntent = "Searching store catalog for: \"" + userPromptText + "\"";
+        }
+
         List<AiRecommendationItem> items = new ArrayList<>();
 
         for (Product p : products) {
-            int score = 65;
+            // STRICT FILTERING: If any extracted constraint is violated, skip product immediately!
+            if (!productMatchesStrictConstraints(p, extractedCategory, extractedBudget, extractedRam, extractedBrand)) {
+                continue;
+            }
+
+            int score = 70;
             List<String> highlights = new ArrayList<>();
+            List<String> reasons = new ArrayList<>();
 
-            if (p.getRam() != null && query.contains(p.getRam().toLowerCase())) {
-                score += 20;
-                highlights.add(p.getRam() + " RAM");
-            }
-            if (p.getProcessor() != null && query.contains(p.getProcessor().toLowerCase())) {
-                score += 20;
-                highlights.add(p.getProcessor());
-            }
-            if (p.getCategory() != null && query.contains(p.getCategory().toLowerCase())) {
-                score += 15;
-                highlights.add(p.getCategory());
-            }
-            if (p.getName() != null && query.contains(p.getName().toLowerCase())) {
-                score += 25;
-                highlights.add(p.getName());
+            String pCat = p.getCategory() != null ? p.getCategory().toLowerCase() : "";
+            String pName = p.getName() != null ? p.getName().toLowerCase() : "";
+            String pDesc = p.getDescription() != null ? p.getDescription().toLowerCase() : "";
+            String pRam = p.getRam() != null ? p.getRam().toLowerCase() : "";
+            String pProc = p.getProcessor() != null ? p.getProcessor().toLowerCase() : "";
+            String pBrand = p.getBrand() != null ? p.getBrand().toLowerCase() : "";
+
+            if (extractedCategory != null) {
+                score += 10;
+                highlights.add(p.getCategory() != null ? p.getCategory() : capitalize(extractedCategory));
+                reasons.add("Fits your " + extractedCategory + " category");
             }
 
-            if (score > 65) {
-                items.add(AiRecommendationItem.builder()
-                        .productId(p.getId())
-                        .product(p)
-                        .matchScore(Math.min(score, 99))
-                        .matchReason("Matched keywords in your voice/text prompt.")
-                        .highlight(!highlights.isEmpty() ? String.join(" • ", highlights) : "Matched")
-                        .build());
+            if (extractedRam != null) {
+                score += 10;
+                highlights.add(p.getRam() != null ? p.getRam() : extractedRam + "GB RAM");
+                reasons.add("Has requested " + extractedRam + "GB RAM");
             }
+
+            if (extractedProcessor != null) {
+                if (pProc.contains(extractedProcessor) || pDesc.contains(extractedProcessor) || pName.contains(extractedProcessor)) {
+                    score += 10;
+                    highlights.add(p.getProcessor() != null ? p.getProcessor() : extractedProcessor);
+                    reasons.add("Equipped with " + (p.getProcessor() != null ? p.getProcessor() : extractedProcessor));
+                }
+            }
+
+            if (extractedBrand != null) {
+                score += 10;
+                highlights.add(p.getBrand() != null ? p.getBrand() : capitalize(extractedBrand));
+                reasons.add("Genuine " + capitalize(extractedBrand) + " product");
+            }
+
+            if (extractedBudget != null && p.getPrice() != null) {
+                highlights.add("Within Budget (₹" + String.format("%,.0f", p.getPrice()) + ")");
+                reasons.add("Priced at ₹" + String.format("%,.0f", p.getPrice()) + " which fits under your ₹" + String.format("%,.0f", extractedBudget) + " budget");
+            }
+
+            // General keyword matching
+            String[] tokens = query.split("[\\s,;]+");
+            int tokenMatches = 0;
+            for (String t : tokens) {
+                if (t.length() <= 2) continue;
+                if (isStopWord(t)) continue;
+                if (pName.contains(t) || pDesc.contains(t)) {
+                    tokenMatches++;
+                }
+            }
+            if (tokenMatches > 0) {
+                score += Math.min(tokenMatches * 5, 10);
+            }
+
+            String matchReason = reasons.isEmpty()
+                    ? "Matches your voice/prompt query based on store specifications."
+                    : String.join(". ", reasons) + ".";
+
+            items.add(AiRecommendationItem.builder()
+                    .productId(p.getId())
+                    .product(p)
+                    .matchScore(Math.min(score, 98))
+                    .matchReason(matchReason)
+                    .highlight(!highlights.isEmpty() ? String.join(" • ", highlights) : "Store Match")
+                    .build());
         }
 
         items.sort((a, b) -> Integer.compare(b.getMatchScore(), a.getMatchScore()));
-        List<AiRecommendationItem> topMatches = items.stream().limit(4).collect(Collectors.toList());
+        List<AiRecommendationItem> topMatches = items.stream().limit(6).collect(Collectors.toList());
 
-        if (topMatches.isEmpty() && !products.isEmpty()) {
-            topMatches = products.stream().limit(2).map(p -> AiRecommendationItem.builder()
-                    .productId(p.getId())
-                    .product(p)
-                    .matchScore(80)
-                    .matchReason("Popular choice in store inventory.")
-                    .highlight("Recommended")
-                    .build()).collect(Collectors.toList());
-        }
-
+        // CRITICAL: DO NOT inject arbitrary fallback products if no products matched!
         return AiPromptSearchResponse.builder()
-                .detectedIntent("Searched for: \"" + userPromptText + "\"")
+                .detectedIntent(detectedIntent)
                 .matches(topMatches)
                 .build();
+    }
+
+    private boolean productMatchesStrictConstraints(Product p, String category, Double maxBudget, Integer ram, String brand) {
+        if (p == null) return false;
+
+        // 1. Strict Category Constraint
+        if (category != null && !matchesCategory(p, category)) {
+            return false;
+        }
+
+        // 2. Strict Budget Constraint: Price MUST be <= budget
+        if (maxBudget != null) {
+            if (p.getPrice() == null || p.getPrice() > maxBudget) {
+                return false;
+            }
+        }
+
+        // 3. Strict RAM Constraint
+        if (ram != null) {
+            String pRam = p.getRam() != null ? p.getRam().toLowerCase() : "";
+            String pDesc = p.getDescription() != null ? p.getDescription().toLowerCase() : "";
+            String pName = p.getName() != null ? p.getName().toLowerCase() : "";
+            boolean hasRam = pRam.contains(String.valueOf(ram)) || pDesc.contains(ram + "gb") || pDesc.contains(ram + " gb") || pName.contains(ram + "gb");
+            if (!hasRam) {
+                return false;
+            }
+        }
+
+        // 4. Strict Brand Constraint
+        if (brand != null) {
+            String pBrand = p.getBrand() != null ? p.getBrand().toLowerCase() : "";
+            String pName = p.getName() != null ? p.getName().toLowerCase() : "";
+            if (!pBrand.contains(brand) && !pName.contains(brand)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private boolean matchesCategory(Product p, String cat) {
+        if (p == null || cat == null) return true;
+        String pCat = p.getCategory() != null ? p.getCategory().toLowerCase() : "";
+        String pName = p.getName() != null ? p.getName().toLowerCase() : "";
+        String pDesc = p.getDescription() != null ? p.getDescription().toLowerCase() : "";
+
+        if (cat.equals("phone")) {
+            return pCat.contains("phone") || pCat.contains("mobile") || pCat.contains("smartphone") ||
+                   pName.contains("phone") || pName.contains("iphone") || pName.contains("galaxy") || pDesc.contains("smartphone") || pDesc.contains("5g phone");
+        }
+        if (cat.equals("laptop")) {
+            return pCat.contains("laptop") || pCat.contains("notebook") || pCat.contains("ultrabook") ||
+                   pName.contains("laptop") || pName.contains("macbook") || pName.contains("thinkpad") || pDesc.contains("laptop");
+        }
+        if (cat.equals("audio")) {
+            return pCat.contains("audio") || pCat.contains("headphone") || pCat.contains("earphone") ||
+                   pName.contains("headphone") || pName.contains("earphone") || pName.contains("earbud") || pName.contains("airpod");
+        }
+        if (cat.equals("tablet")) {
+            return pCat.contains("tablet") || pName.contains("tablet") || pName.contains("ipad");
+        }
+        if (cat.equals("gaming")) {
+            return pCat.contains("gaming") || pName.contains("gaming") || pDesc.contains("gaming");
+        }
+        return pCat.contains(cat) || pName.contains(cat);
+    }
+
+    private boolean isGroqConfigured() {
+        return groqApiKey != null && !groqApiKey.isBlank() && !groqApiKey.contains("${") && !groqApiKey.equalsIgnoreCase("none");
+    }
+
+    private Double extractBudget(String query) {
+        String clean = query.replace(",", "").toLowerCase();
+
+        // 1. Explicit budget indicator (e.g. under 20k, below 20000, less than 20k, within 20k, budget 20k, max 20k)
+        java.util.regex.Pattern p1 = java.util.regex.Pattern.compile(
+                "(?:under|below|less than|within|budget of?|max|upto|up to|cheaper than|<=|<)\\s*(?:rs\\.?|inr|₹)?\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(k|thousand|lakh|lac)?(?!(?:gb|tb|mb|ram|inch|hz))",
+                java.util.regex.Pattern.CASE_INSENSITIVE
+        );
+        java.util.regex.Matcher m1 = p1.matcher(clean);
+        if (m1.find()) {
+            return parseBudgetValue(m1.group(1), m1.group(2));
+        }
+
+        // 2. Currency symbol followed by number (₹20000, rs 20k)
+        java.util.regex.Pattern p2 = java.util.regex.Pattern.compile(
+                "(?:rs\\.?|inr|₹)\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(k|thousand|lakh|lac)?(?!(?:gb|tb|mb|ram|inch|hz))",
+                java.util.regex.Pattern.CASE_INSENSITIVE
+        );
+        java.util.regex.Matcher m2 = p2.matcher(clean);
+        if (m2.find()) {
+            return parseBudgetValue(m2.group(1), m2.group(2));
+        }
+
+        // 3. Number with k or lakh suffix (e.g. 20k phone)
+        java.util.regex.Pattern p3 = java.util.regex.Pattern.compile(
+                "\\b([0-9]+(?:\\.[0-9]+)?)\\s*(k|lakh|lac)\\b(?!(?:gb|tb|mb|ram|inch|hz))",
+                java.util.regex.Pattern.CASE_INSENSITIVE
+        );
+        java.util.regex.Matcher m3 = p3.matcher(clean);
+        if (m3.find()) {
+            return parseBudgetValue(m3.group(1), m3.group(2));
+        }
+
+        return null;
+    }
+
+    private Double parseBudgetValue(String numStr, String unit) {
+        try {
+            double val = Double.parseDouble(numStr);
+            if (unit != null) {
+                String u = unit.toLowerCase();
+                if (u.startsWith("k") || u.startsWith("thous")) {
+                    val *= 1000;
+                } else if (u.startsWith("lak") || u.startsWith("lac")) {
+                    val *= 100000;
+                }
+            }
+            return val;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private Integer extractRam(String query) {
+        java.util.regex.Pattern p = java.util.regex.Pattern.compile(
+                "\\b(4|8|12|16|24|32|64)\\s*(?:gb|gig)\\b",
+                java.util.regex.Pattern.CASE_INSENSITIVE
+        );
+        java.util.regex.Matcher m = p.matcher(query);
+        if (m.find()) {
+            try {
+                return Integer.parseInt(m.group(1));
+            } catch (Exception ignored) {}
+        }
+        return null;
+    }
+
+    private String extractCategory(String query) {
+        String q = query.toLowerCase();
+        if (q.matches(".*\\b(phones?|smartphones?|mobiles?|iphones?|androids?)\\b.*")) return "phone";
+        if (q.matches(".*\\b(laptops?|macbooks?|notebooks?|chromebooks?|ultrabooks?)\\b.*")) return "laptop";
+        if (q.matches(".*\\b(headphones?|earphones?|earbuds?|airpods?|headsets?|audios?)\\b.*")) return "audio";
+        if (q.matches(".*\\b(tablets?|ipads?)\\b.*")) return "tablet";
+        if (q.matches(".*\\b(gamings?|consoles?)\\b.*")) return "gaming";
+        return null;
+    }
+
+    private String extractBrand(String query) {
+        String q = query.toLowerCase();
+        String[] brands = {"apple", "asus", "dell", "hp", "lenovo", "samsung", "acer", "msi", "sony", "boat", "oneplus", "google", "xiaomi", "motorola", "realme"};
+        for (String b : brands) {
+            if (q.contains(b)) return b;
+        }
+        return null;
+    }
+
+    private String extractProcessor(String query) {
+        String q = query.toLowerCase();
+        if (q.contains("i9") || q.contains("core i9")) return "i9";
+        if (q.contains("i7") || q.contains("core i7")) return "i7";
+        if (q.contains("i5") || q.contains("core i5")) return "i5";
+        if (q.contains("i3") || q.contains("core i3")) return "i3";
+        if (q.contains("ryzen 9")) return "ryzen 9";
+        if (q.contains("ryzen 7")) return "ryzen 7";
+        if (q.contains("ryzen 5")) return "ryzen 5";
+        if (q.contains("m1") || q.contains("m2") || q.contains("m3") || q.contains("m4")) return "apple";
+        if (q.contains("snapdragon")) return "snapdragon";
+        if (q.contains("intel")) return "intel";
+        if (q.contains("amd") || q.contains("ryzen")) return "amd";
+        return null;
+    }
+
+    private boolean isStopWord(String word) {
+        Set<String> stopWords = Set.of(
+                "i", "want", "need", "for", "a", "an", "the", "with", "show", "me", "find", "get", "buy", "looking", "please", "can", "you", "good", "best"
+        );
+        return stopWords.contains(word.toLowerCase());
+    }
+
+    private String capitalize(String str) {
+        if (str == null || str.isEmpty()) return str;
+        return str.substring(0, 1).toUpperCase() + str.substring(1);
     }
 }
